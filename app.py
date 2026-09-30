@@ -225,14 +225,14 @@ with st.sidebar:
     st.subheader("🛠️ Technology")
 
     st.write("🐍 Python")
-    st.write("⚡ FastAPI")
+    st.write("⚡ FastAPI Backend")
     st.write("🎨 Streamlit")
     st.write("🌐 Open-Meteo API")
 
     st.divider()
 
     st.caption("SkyCast Weather Forecast")
-    st.caption("Powered by Python")
+    st.caption("Powered by Python + Open-Meteo")
 
 
 # =========================================================
@@ -285,13 +285,135 @@ if search:
 
             with st.spinner("🌐 Fetching latest weather data..."):
 
-                response = requests.get(
-                    "http://127.0.0.1:8000/weather",
+                # Streamlit Cloud compatible:
+                # Fetch location directly from Open-Meteo Geocoding API
+                geo_response = requests.get(
+                    "https://geocoding-api.open-meteo.com/v1/search",
                     params={
-                        "city": city.strip()
+                        "name": city.strip(),
+                        "count": 1,
+                        "language": "en",
+                        "format": "json"
                     },
                     timeout=20
                 )
+
+                if geo_response.status_code != 200:
+                    st.error("❌ Unable to connect to the weather service.")
+                    st.stop()
+
+                geo_data = geo_response.json()
+
+                if "results" not in geo_data or not geo_data["results"]:
+                    st.error(f"❌ City '{city.strip()}' not found.")
+                    st.stop()
+
+                place = geo_data["results"][0]
+                latitude = place["latitude"]
+                longitude = place["longitude"]
+
+                response = requests.get(
+                    "https://api.open-meteo.com/v1/forecast",
+                    params={
+                        "latitude": latitude,
+                        "longitude": longitude,
+                        "current": [
+                            "temperature_2m",
+                            "relative_humidity_2m",
+                            "apparent_temperature",
+                            "precipitation",
+                            "weather_code",
+                            "wind_speed_10m",
+                            "surface_pressure"
+                        ],
+                        "daily": [
+                            "weather_code",
+                            "temperature_2m_max",
+                            "temperature_2m_min",
+                            "apparent_temperature_max",
+                            "apparent_temperature_min",
+                            "precipitation_sum",
+                            "rain_sum",
+                            "wind_speed_10m_max"
+                        ],
+                        "forecast_days": 7,
+                        "timezone": "auto"
+                    },
+                    timeout=20
+                )
+
+                # Convert Open-Meteo response to the same structure
+                # already used by this frontend.
+                if response.status_code == 200:
+                    api_data = response.json()
+
+                    weather_descriptions = {
+                        0: "Clear Sky",
+                        1: "Mainly Clear",
+                        2: "Partly Cloudy",
+                        3: "Overcast",
+                        45: "Fog",
+                        48: "Depositing Rime Fog",
+                        51: "Light Drizzle",
+                        53: "Moderate Drizzle",
+                        55: "Dense Drizzle",
+                        61: "Slight Rain",
+                        63: "Moderate Rain",
+                        65: "Heavy Rain",
+                        71: "Slight Snow",
+                        73: "Moderate Snow",
+                        75: "Heavy Snow",
+                        80: "Rain Showers",
+                        81: "Moderate Rain Showers",
+                        82: "Violent Rain Showers",
+                        95: "Thunderstorm",
+                        96: "Thunderstorm with Hail",
+                        99: "Thunderstorm with Heavy Hail"
+                    }
+
+                    def weather_description(code):
+                        return weather_descriptions.get(code, "Unknown Weather")
+
+                    current = api_data["current"]
+                    daily = api_data["daily"]
+
+                    data = {
+                        "location": {
+                            "city": place["name"],
+                            "country": place.get("country", ""),
+                            "latitude": latitude,
+                            "longitude": longitude
+                        },
+                        "current_weather": {
+                            "temperature": current["temperature_2m"],
+                            "humidity": current["relative_humidity_2m"],
+                            "feels_like": current["apparent_temperature"],
+                            "precipitation": current["precipitation"],
+                            "weather": weather_description(current["weather_code"]),
+                            "wind_speed": current["wind_speed_10m"],
+                            "pressure": current["surface_pressure"]
+                        },
+                        "forecast": [
+                            {
+                                "date": daily["time"][i],
+                                "weather": weather_description(daily["weather_code"][i]),
+                                "weather_code": daily["weather_code"][i],
+                                "max_temperature": daily["temperature_2m_max"][i],
+                                "min_temperature": daily["temperature_2m_min"][i],
+                                "max_feels_like": daily["apparent_temperature_max"][i],
+                                "min_feels_like": daily["apparent_temperature_min"][i],
+                                "precipitation": daily["precipitation_sum"][i],
+                                "rain": daily["rain_sum"][i],
+                                "max_wind_speed": daily["wind_speed_10m_max"][i]
+                            }
+                            for i in range(len(daily["time"]))
+                        ]
+                    }
+
+
+                else:
+                    st.error("❌ Unable to fetch weather data.")
+                    st.stop()
 
             # -------------------------------------------------
             # ERROR
@@ -299,21 +421,12 @@ if search:
 
             if response.status_code != 200:
 
-                try:
-                    message = response.json().get(
-                        "detail",
-                        "City not found."
-                    )
-
-                except Exception:
-                    message = "Unable to fetch weather."
-
-                st.error(f"❌ {message}")
+                st.error("❌ Unable to fetch weather data.")
 
             else:
 
-                data = response.json()
-
+                # Weather data was already converted above into
+                # the same structure used by the dashboard.
                 location = data["location"]
                 current = data["current_weather"]
                 forecast = data["forecast"]
@@ -630,7 +743,7 @@ if search:
 
                 st.caption(
                     "🌤️ SkyCast Weather Forecast  |  "
-                    "Python + FastAPI + Streamlit + Open-Meteo"
+                    "Python + Streamlit + Open-Meteo"
                 )
 
         # =========================================================
@@ -640,15 +753,11 @@ if search:
         except requests.exceptions.ConnectionError:
 
             st.error(
-                "❌ FastAPI backend is not running."
+                "❌ Unable to connect to Open-Meteo."
             )
 
             st.info(
-                "Run this command in another terminal:"
-            )
-
-            st.code(
-                "python -m uvicorn main:app --reload"
+                "Please check your internet connection and try again."
             )
 
         # =========================================================
